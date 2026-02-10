@@ -443,6 +443,67 @@ public class UserService {
 }
 ```
 
+### dubbo 接口
+分页查询接口定义规则：
+- 方法签名：BasePageImpl<DTO类型> page(查询DTO queryDTO, Pageable pageable)
+- 查询 DTO：包含业务查询条件，实现 Serializable
+- 返回类型：BasePageImpl<T>（来自 pupu-plus-starter-constants 包）
+- 分页参数：使用 org.springframework.data.domain.Pageable
+
+举例如下：
+```java
+  import com.pphr.constants.dto.BasePageImpl;
+  import org.springframework.data.domain.Pageable;
+
+  public interface ITenantApi {
+      /**
+       * 分页查询租户列表
+       *
+       * @param queryDTO 查询条件
+       * @param pageable 分页参数
+       * @return 分页结果
+       */
+      BasePageImpl<TenantDTO> page(TenantQueryDTO queryDTO, Pageable pageable);
+  }
+```
+查询参数 DTO：
+```java
+  import lombok.AllArgsConstructor;
+  import lombok.Builder;
+  import lombok.Data;
+  import lombok.NoArgsConstructor;
+
+  import java.io.Serializable;
+  import java.util.List;
+
+  @Data
+  @Builder
+  @NoArgsConstructor
+  @AllArgsConstructor
+  public class TenantQueryDTO implements Serializable {
+
+      private static final long serialVersionUID = -1266578365212973258L;
+
+      /**
+       * 数据类型（如 VORG）
+       */
+      private String dataType;
+
+      /**
+       * 访问类型（如 USER、INNER_SYSTEM、OUTER_SYSTEM）
+       */
+      private String accessType;
+
+      /**
+       * 访问 ID 集合（支持按多个 accessId 查询）
+       */
+      private List<String> accessIds;
+  }
+```
+返回结果类型：
+- 来自 com.pphr.constants.dto.BasePageImpl（项目依赖：pupu-plus-starter-constants）
+- 分页参数使用 Spring Data 的 org.springframework.data.domain.Pageable
+
 ### 方法长度
 
 - 单个方法不超过 50 行
