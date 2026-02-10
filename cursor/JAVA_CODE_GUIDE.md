@@ -360,14 +360,15 @@ public class User {
     private Integer status;
 }
 ```
-注意：注释不要用一行注释，而是使用多行注释格式。 
+注意：
+1. 注释不要用一行注释，而是使用多行注释格式。 
 ```java
 /**
  * 用户名，唯一索引
  */
 private String username;
 ```
-
+2. 注释使用中文，但是标点符号使用英文标点符号。
 ### 复杂逻辑注释
 
 ```java
