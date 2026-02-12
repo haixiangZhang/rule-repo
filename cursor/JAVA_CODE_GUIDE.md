@@ -5,13 +5,17 @@
 1. [命名规范](#命名规范)
 2. [代码格式](#代码格式)
 3. [注释规范](#注释规范)
-4. [类和方法设计](#类和方法设计)
-5. [异常处理](#异常处理)
-6. [集合使用](#集合使用)
-7. [并发编程](#并发编程)
-8. [数据库操作](#数据库操作)
-9. [日志规范](#日志规范)
-10. [安全编码](#安全编码)
+4. [接口层面规范](#接口层面规范)
+5. [分页规范](#分页规范)
+6. [异常处理规范](#异常处理规范)
+7. [类和方法设计](#类和方法设计)
+8. [集合使用](#集合使用)
+9. [并发编程](#并发编程)
+10. [数据库操作](#数据库操作)
+11. [日志规范](#日志规范)
+12. [安全编码](#安全编码)
+13. [性能优化](#性能优化)
+14. [工具推荐](#工具推荐)
 
 ---
 
@@ -62,6 +66,7 @@ public class PSImpl { }
 | Entity | Xxx | User, Order |
 | DTO | XxxDTO | UserDTO, OrderDTO |
 | VO | XxxVO | UserVO, OrderVO |
+| RO | XxxRO | UserQueryRO, UserSearchRO |
 | 工具类 | XxxUtil 或 XxxUtils | StringUtil, DateUtils |
 | 常量类 | XxxConstant | SystemConstant |
 | 异常类 | XxxException | BusinessException |
@@ -360,15 +365,20 @@ public class User {
     private Integer status;
 }
 ```
-注意：
-1. 注释不要用一行注释，而是使用多行注释格式。 
+
+**注意：**
+
+1. 注释不要用一行注释，而是使用多行注释格式。
+
 ```java
 /**
  * 用户名，唯一索引
  */
 private String username;
 ```
+
 2. 注释使用中文，但是标点符号使用英文标点符号。
+
 ### 复杂逻辑注释
 
 ```java
@@ -425,6 +435,549 @@ for (User user : users) {
 
 ---
 
+## 接口层面规范
+
+### Controller 类规范
+
+Controller 类必须包含以下注解：
+
+```java
+@Slf4j                                          // 日志
+@Validated                                      // 启用参数验证
+@ApiCode(value = ApiCodeConstants.User.code)    // API 编码注解
+@Api(tags = "人员接口")                          // Swagger 文档标签
+@RestController                                  // RESTful 控制器
+@RequestMapping("/open/basic/" + VERSION)        // 路径使用常量 VERSION (v1)
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    // 接口方法
+}
+```
+
+### 接口方法规范
+
+每个接口方法需要包含完整的注解和文档：
+
+```java
+@ApiOperation("获取人员基础信息")
+@ApiImplicitParams({
+    @ApiImplicitParam(name = "num", value = "工号", required = true),
+    @ApiImplicitParam(name = "is_enabled", value = "是否在职", required = false),
+    @ApiImplicitParam(name = "ext_columns", value = "扩展字段", required = false)
+})
+@ApiCode(value = ApiCodeConstants.User.getUser,
+         authMode = {ApiAuthEnum.SERVER, ApiAuthEnum.USER_TOB})
+@GetMapping("/users/nums/{num}")
+@EncryptDecrypt
+public JsonResponse<UserVO> getUser(
+    @PathVariable("num") String userNum,
+    @RequestParam(value = "is_enabled", required = false) Boolean isEnabled,
+    @RequestParam(value = "is_deleted", required = false) Boolean isDeleted,
+    @RequestParam(value = "ext_columns", required = false) List<String> extColumns) {
+
+    // 设置字段权限
+    FieldsContext.setFields(
+        FieldPermissionCache.getAvailableFieldList(DataTypeEnum.USER, UserVO.class, extColumns)
+    );
+
+    UserVO userVo = userService.get(userNum, isEnabled, isDeleted);
+    return JsonResponse.getInstance(userVo);
+}
+```
+
+### URL 命名规范
+
+- 使用下划线命名：`/users/nums/{num}`, `/org_nodes/{node_id}`
+- 路径参数使用下划线：`node_id`, `user_id`
+- 查询参数使用下划线：`is_enabled`, `is_deleted`, `ext_columns`
+- 批量操作：使用 `/batch` 后缀
+- 搜索接口：使用 `/search` 后缀
+- 查询接口：使用 `/query` 后缀
+
+**示例：**
+
+```
+GET  /users/nums/{num}              # 获取单个用户
+GET  /users/nums/batch              # 批量获取用户
+POST /users/nums/batch              # 批量获取用户（POST）
+GET  /users/search                  # 搜索用户
+POST /users/search                  # 搜索用户（POST）
+POST /users/query                   # 查询用户
+POST /users/user_ids/query          # 查询用户ID列表
+```
+
+### 参数验证规范
+
+**Controller 类级别验证：**
+
+```java
+@Validated
+@RestController
+public class UserController {
+
+    // RequestBody 参数必须使用 @Validated
+    @PostMapping("/users/nums/batch")
+    public JsonResponse<List<UserVO>> getUsers(
+        @Validated @RequestBody UserBatchRO userBatchRO) {
+
+        // 业务参数校验
+        if (CollectionUtils.isEmpty(userBatchRO.getNums())) {
+            throw new BizException("nums.length.invalid");
+        }
+
+        // 执行业务逻辑
+        List<UserVO> userVOS = userService.get(
+            userBatchRO.getNums(),
+            userBatchRO.getIsEnabled(),
+            userBatchRO.getIsDeleted()
+        );
+
+        return JsonResponse.getInstance(userVOS);
+    }
+}
+```
+
+### RO (Request Object) 规范
+
+请求对象需要包含序列化ID、校验注解和API文档注解：
+
+```java
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@ApiModel(value = "人员查询参数")
+public class UserQueryRO extends UserQueryBaseRO implements Serializable {
+
+    private static final long serialVersionUID = -8319909306133230805L;
+
+    @ApiModelProperty(value = "扩展字段")
+    private List<String> extColumns;
+
+    @ApiModelProperty(value = "岗位级别集合，EHR字典BM_ZWDJ")
+    private List<String> postLevels;
+
+    // 使用 @Size 注解限制集合大小
+    @Size(max = Constants.NODE_ID_MAX_SIZE, message = "nodeIds.length.invalid")
+    @ApiModelProperty(value = "搜索人员归属节点id集合")
+    private Collection<Long> nodeIds;
+
+    // 使用 @Pattern 注解验证格式
+    @ApiModelProperty(value = "出生日期(年月日)，格式yyyy-MM-dd")
+    private List<@Pattern(regexp = "^\\d{4}-\\d{2}-\\d{2}$",
+                          message = "invalid.birthDay") String> birthDates;
+}
+```
+
+### VO (View Object) 规范
+
+返回对象需要使用字段权限过滤：
+
+```java
+// 设置允许返回的字段
+FieldsContext.setFields(
+    FieldPermissionCache.getAvailableFieldList(
+        DataTypeEnum.USER, UserVO.class, extColumns
+    )
+);
+
+// 执行业务逻辑
+UserVO userVo = userService.get(userNum, isEnabled, isDeleted);
+
+// 返回结果（自动过滤字段）
+return JsonResponse.getInstance(userVo);
+```
+
+### 认证鉴权规范
+
+使用 `@ApiCode` 注解配置认证模式：
+
+```java
+// 1. 仅服务端访问
+@ApiCode(value = ApiCodeConstants.User.getUser,
+         authMode = {ApiAuthEnum.SERVER})
+
+// 2. 服务端 + ToB用户访问
+@ApiCode(value = ApiCodeConstants.User.getUser,
+         authMode = {ApiAuthEnum.SERVER, ApiAuthEnum.USER_TOB})
+
+// 3. 服务端 + ToB用户 + ToC用户访问
+@ApiCode(value = ApiCodeConstants.Config.getFrontConfig,
+         authMode = {ApiAuthEnum.SERVER, ApiAuthEnum.USER_TOB, ApiAuthEnum.USER_TOC})
+
+// 4. 允许匿名访问
+@ApiCode(allowAnonymous = true)
+```
+
+### 数据安全规范
+
+敏感数据接口需要加密传输：
+
+```java
+@PostMapping("/users/identity_info/query")
+@EncryptDecrypt  // 加解密注解
+@ApiCode(value = ApiCodeConstants.User.getByIdentity, authMode = {ApiAuthEnum.SERVER})
+public JsonResponse<UserPassageVO> getByIdentity(
+    @RequestBody @Validated UserIdentityQueryRO userIdentityQueryRO) {
+
+    return JsonResponse.getInstance(
+        userService.getByIdentity(userIdentityQueryRO.getIdentityNum(), cacheEnable)
+    );
+}
+```
+
+**关键点：**
+
+- 敏感数据接口使用 `@EncryptDecrypt` 注解
+- 字段权限控制使用 `FieldPermissionCache`
+- 身份证等敏感信息需加密传输
+
+---
+
+## 分页规范
+
+### 分页参数注解
+
+使用 Spring Data 的 `Pageable` 和自定义的 `@MaxPageSize` 注解：
+
+```java
+// 默认分页参数：page=1, size=20
+@PageableDefault(page = 1, size = 20) Pageable pageable
+
+// 带最大页大小限制
+@PageableDefault(page = 1, size = 20)
+@MaxPageSize(value = Constants.PAGE_SIZE_1K)  // 1000
+Pageable pageable
+```
+
+### 分页大小常量定义
+
+在 `Constants` 接口中定义分页常量：
+
+```java
+public interface Constants {
+
+    /**
+     * 批量查询数据的最大集合数量（GET 有 URL 最大长度限制）
+     */
+    int PAGE_SIZE_BATCH_GET = 200;
+
+    /**
+     * 分页查询数量限制：组织、岗位、查询ID等
+     */
+    int PAGE_SIZE_2K = 2000;
+
+    /**
+     * 分页查询数量限制：人员
+     */
+    int PAGE_SIZE_1K = 1000;
+}
+```
+
+### 分页返回规范
+
+使用 `PageResponse` 包装分页结果：
+
+```java
+@PostMapping("/users/search")
+public PageResponse<UserVO> searchUser(
+    @RequestBody @Validated UserSearchRO userSearchRO,
+    @PageableDefault(page = 1, size = 20)
+    @MaxPageSize(value = Constants.PAGE_SIZE_1K) Pageable pageable) {
+
+    // 空参数校验
+    if (CollectionUtil.isAllFieldEmpty(userSearchRO)) {
+        return PageResponse.getInstance(0, "query param is empty");
+    }
+
+    // 设置字段权限
+    List<String> pullFieldList = FieldPermissionCache.getAvailableFieldList(
+        DataTypeEnum.USER, UserVO.class, userSearchRO.getExtColumns()
+    );
+    FieldsContext.setFields(pullFieldList);
+
+    // 执行查询
+    BasePageImpl<UserVO> userSearchVOS = userService.searchUser(userSearchRO, pageable);
+
+    // 返回分页结果
+    return PageResponse.getInstance(userSearchVOS);
+}
+```
+
+### 分页场景使用规范
+
+根据不同场景使用不同的分页限制：
+
+| 场景 | 默认大小 | 最大限制 | 常量 |
+|------|---------|---------|------|
+| 人员查询 | page=1, size=20 | 1000 | PAGE_SIZE_1K |
+| 组织/岗位查询 | page=1, size=20 | 2000 | PAGE_SIZE_2K |
+| ID 查询 | page=1, size=2000 | 2000 | PAGE_SIZE_2K |
+| 批量GET接口 | - | 200 | PAGE_SIZE_BATCH_GET |
+
+**示例：**
+
+```java
+// 人员搜索接口
+@PostMapping("/users/search")
+public PageResponse<UserVO> searchUser(
+    @RequestBody @Validated UserSearchRO userSearchRO,
+    @PageableDefault(page = 1, size = 20)
+    @MaxPageSize(value = Constants.PAGE_SIZE_1K) Pageable pageable) {
+    // ...
+}
+
+// 组织查询接口
+@PostMapping("/org_nodes/query")
+public PageResponse<OrgNodeVO> queryOrgNode(
+    @RequestBody @Validated OrgNodeQueryRO orgNodeQueryRO,
+    @PageableDefault(page = 1, size = 20)
+    @MaxPageSize(value = Constants.PAGE_SIZE_2K) Pageable pageable) {
+    // ...
+}
+
+// 用户ID查询接口
+@PostMapping("/users/user_ids/query")
+public PageResponse<Long> queryUserId(
+    @RequestBody @Validated UserQueryIdsRO queryIdsRO,
+    @PageableDefault(page = 1, size = Constants.PAGE_SIZE_2K)
+    @MaxPageSize(value = Constants.PAGE_SIZE_2K) Pageable pageable) {
+    // ...
+}
+```
+
+---
+
+## 异常处理规范
+
+### 异常抛出规范
+
+使用 `BizException` 抛出业务异常：
+
+```java
+import com.pphr.util.exception.BizException;
+
+// 1. 简单错误码
+if (CollectionUtils.isEmpty(userBatchRO.getNums())) {
+    throw new BizException("nums.length.invalid");
+}
+
+// 2. 带参数的错误码
+throw new BizException("approval_role.invalid", approvalRole);
+
+// 3. 多参数错误码
+throw new BizException("rbac.param.data.invalid", content, employmentStates);
+```
+
+**错误码配置：**
+
+错误码需要配置在 `resources/message.properties` 文件中：
+
+```properties
+nums.length.invalid=工号列表不能为空或长度超限
+approval_role.invalid=审批角色无效: %s
+rbac.param.data.invalid=权限参数数据无效, content: %s, employmentStates: %s
+```
+
+### 常见业务异常场景
+
+**1. 参数校验异常**
+
+```java
+// 集合为空
+if (CollectionUtils.isEmpty(userBatchRO.getNums())) {
+    throw new BizException("nums.length.invalid");
+}
+
+// 关键字长度超限
+if (StringUtils.isNotEmpty(keyword) && keyword.split(",").length > 100) {
+    throw new BizException("keyword.size.invalid");
+}
+
+// 高亮参数校验
+if (isKeywordHighlight != null && isKeywordHighlight &&
+    (StringUtils.isEmpty(keyword) || keyword.split(",").length != 1)) {
+    throw new BizException("keyword.highlight.invalid");
+}
+
+// 互斥参数校验
+Collection<String> intersections = CollectionUtil.intersection(
+    userSearchRO.getExcludeNums(), userSearchRO.getIncludeNums());
+if (intersections.size() > 0) {
+    throw new BizException("excludeNums.includeNums.invalid");
+}
+
+// 自定义查询参数校验
+if (CollectionUtils.isEmpty(customQuery.getValue()) ||
+    customQuery.getValue().contains(null)) {
+    throw new BizException("customQuery.value.invalid");
+}
+```
+
+**2. 权限/认证异常**
+
+```java
+// 权限实体ID必填
+if (permissionEntityId == null) {
+    throw new BizException("required.permissionEntityId");
+}
+
+// 参数组合校验
+if (StringUtils.isEmpty(orgName) && CollectionUtils.isEmpty(nodeIds)) {
+    throw new BizException("orgName.nodeIds.param.empty");
+}
+
+if (parentId != null && id != null) {
+    throw new BizException("parentId.id.param.invalid");
+}
+
+// Token校验
+if (StringUtils.isEmpty(token)) {
+    throw new BizException("token.not.empty");
+}
+
+// 重定向校验
+if (!isValidRedirectUrl(redirectUrl)) {
+    throw new BizException("invalid.redirect");
+}
+```
+
+### 异常处理最佳实践
+
+**1. Try-Catch 包装，避免暴露详细错误**
+
+```java
+@PostMapping("/users/identity/verify")
+public JsonResponse<UserIdentityVerifyVO> verifyUserIdentity(
+    @RequestBody @Validated UserIdentityVerifyRO verifyRO) {
+    try {
+        UserIdentityVerifyVO result = userService.verifyUserIdentity(verifyRO);
+        return JsonResponse.getInstance(result);
+    } catch (Exception e) {
+        log.error("员工身份验证接口异常，身份证后6位: {}, 错误信息: {}",
+                  verifyRO.getIdentityNumSuffix6(), e.getMessage(), e);
+        // 异常时返回验证失败，不暴露具体错误
+        return JsonResponse.getInstance(
+            UserIdentityVerifyVO.builder().verified(false).build());
+    }
+}
+```
+
+**2. 捕获特定异常**
+
+```java
+// 推荐：捕获特定异常
+try {
+    userService.createUser(userDTO);
+} catch (DuplicateUserException e) {
+    log.warn("用户已存在: {}", userDTO.getUsername(), e);
+    throw new BizException("USER_EXISTS", "用户已存在");
+} catch (DatabaseException e) {
+    log.error("数据库操作失败: {}", userDTO, e);
+    throw new SystemException("系统异常，请稍后重试", e);
+}
+
+// 不推荐：捕获 Exception
+try {
+    userService.createUser(userDTO);
+} catch (Exception e) {
+    // 不知道具体什么异常
+}
+
+// 不推荐：空 catch 块
+try {
+    userService.createUser(userDTO);
+} catch (Exception e) {
+    // 吞掉异常
+}
+```
+
+### 统一异常处理
+
+使用 `@RestControllerAdvice` 统一处理异常：
+
+```java
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    /**
+     * 业务异常
+     */
+    @ExceptionHandler(BizException.class)
+    public JsonResponse<Void> handleBusinessException(BizException e) {
+        log.warn("业务异常: {}", e.getMessage());
+        return JsonResponse.fail(e.getCode(), e.getMessage());
+    }
+
+    /**
+     * 参数校验异常
+     */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public JsonResponse<Void> handleValidException(MethodArgumentNotValidException e) {
+        String message = e.getBindingResult().getFieldError().getDefaultMessage();
+        return JsonResponse.fail("INVALID_PARAM", message);
+    }
+
+    /**
+     * 系统异常
+     */
+    @ExceptionHandler(Exception.class)
+    public JsonResponse<Void> handleException(Exception e) {
+        log.error("系统异常", e);
+        return JsonResponse.fail("SYSTEM_ERROR", "系统异常，请稍后重试");
+    }
+}
+```
+
+### 返回值规范
+
+使用统一的响应包装类：
+
+```java
+// 1. 单个对象返回
+JsonResponse<UserVO> response = JsonResponse.getInstance(userVo);
+
+// 2. 集合返回
+JsonResponse<List<UserVO>> response = JsonResponse.getInstance(userVOS);
+
+// 3. 分页返回（空结果）
+PageResponse<UserVO> response = PageResponse.getInstance(0, "query param is empty");
+
+// 4. 分页返回（有数据）
+PageResponse<UserVO> response = PageResponse.getInstance(userSearchVOS);
+
+// 5. 无返回值
+JsonResponse<Void> response = JsonResponse.success();
+
+// 6. 失败返回
+JsonResponse<Void> response = JsonResponse.fail("ERROR_CODE", "错误信息");
+```
+
+### 异常抛出原则
+
+1. 不要捕获后不处理
+2. 不要过度使用异常（正常逻辑不用异常）
+3. 异常信息要清晰
+4. finally 块用于资源释放
+
+```java
+// 不推荐：用异常控制流程
+try {
+    Integer.parseInt(str);
+    return true;
+} catch (NumberFormatException e) {
+    return false;
+}
+
+// 推荐：正常逻辑判断
+return str.matches("\\d+");
+```
+
+---
+
 ## 类和方法设计
 
 ### 单一职责原则
@@ -451,66 +1004,73 @@ public class UserService {
 }
 ```
 
-### dubbo 接口
-分页查询接口定义规则：
-- 方法签名：BasePageImpl<DTO类型> page(查询DTO queryDTO, Pageable pageable)
+### Dubbo 接口规范
+
+**分页查询接口定义规则：**
+
+- 方法签名：`BasePageImpl<DTO类型> page(查询DTO queryDTO, Pageable pageable)`
 - 查询 DTO：包含业务查询条件，实现 Serializable
-- 返回类型：BasePageImpl<T>（来自 pupu-plus-starter-constants 包）
-- 分页参数：使用 org.springframework.data.domain.Pageable
+- 返回类型：`BasePageImpl<T>`（来自 pupu-plus-starter-constants 包）
+- 分页参数：使用 `org.springframework.data.domain.Pageable`
 
-举例如下：
+**接口定义示例：**
+
 ```java
-  import com.pphr.constants.dto.BasePageImpl;
-  import org.springframework.data.domain.Pageable;
+import com.pphr.constants.dto.BasePageImpl;
+import org.springframework.data.domain.Pageable;
 
-  public interface ITenantApi {
-      /**
-       * 分页查询租户列表
-       *
-       * @param queryDTO 查询条件
-       * @param pageable 分页参数
-       * @return 分页结果
-       */
-      BasePageImpl<TenantDTO> page(TenantQueryDTO queryDTO, Pageable pageable);
-  }
+public interface ITenantApi {
+    /**
+     * 分页查询租户列表
+     *
+     * @param queryDTO 查询条件
+     * @param pageable 分页参数
+     * @return 分页结果
+     */
+    BasePageImpl<TenantDTO> page(TenantQueryDTO queryDTO, Pageable pageable);
+}
 ```
-查询参数 DTO：
+
+**查询参数 DTO：**
+
 ```java
-  import lombok.AllArgsConstructor;
-  import lombok.Builder;
-  import lombok.Data;
-  import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
-  import java.io.Serializable;
-  import java.util.List;
+import java.io.Serializable;
+import java.util.List;
 
-  @Data
-  @Builder
-  @NoArgsConstructor
-  @AllArgsConstructor
-  public class TenantQueryDTO implements Serializable {
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class TenantQueryDTO implements Serializable {
 
-      private static final long serialVersionUID = -1266578365212973258L;
+    private static final long serialVersionUID = -1266578365212973258L;
 
-      /**
-       * 数据类型（如 VORG）
-       */
-      private String dataType;
+    /**
+     * 数据类型（如 VORG）
+     */
+    private String dataType;
 
-      /**
-       * 访问类型（如 USER、INNER_SYSTEM、OUTER_SYSTEM）
-       */
-      private String accessType;
+    /**
+     * 访问类型（如 USER、INNER_SYSTEM、OUTER_SYSTEM）
+     */
+    private String accessType;
 
-      /**
-       * 访问 ID 集合（支持按多个 accessId 查询）
-       */
-      private List<String> accessIds;
-  }
+    /**
+     * 访问 ID 集合（支持按多个 accessId 查询）
+     */
+    private List<String> accessIds;
+}
 ```
-返回结果类型：
-- 来自 com.pphr.constants.dto.BasePageImpl（项目依赖：pupu-plus-starter-constants）
-- 分页参数使用 Spring Data 的 org.springframework.data.domain.Pageable
+
+**返回结果类型：**
+
+- 来自 `com.pphr.constants.dto.BasePageImpl`（项目依赖：pupu-plus-starter-constants）
+- 分页参数使用 Spring Data 的 `org.springframework.data.domain.Pageable`
 
 ### 方法长度
 
@@ -580,115 +1140,6 @@ public List<User> listUsers() {
 public User getUserById(Long id) {
     return userMapper.selectById(id); // 可能返回 null
 }
-```
-
----
-
-## 异常处理
-
-### 异常分类
-
-```java
-// 业务异常（继承 RuntimeException）
-public class BusinessException extends RuntimeException {
-    private final String code;
-
-    public BusinessException(String code, String message) {
-        super(message);
-        this.code = code;
-    }
-}
-
-// 系统异常
-public class SystemException extends RuntimeException {
-    public SystemException(String message, Throwable cause) {
-        super(message, cause);
-    }
-}
-```
-
-### 异常处理规范
-
-```java
-// 推荐：捕获特定异常
-try {
-    userService.createUser(userDTO);
-} catch (DuplicateUserException e) {
-    log.warn("用户已存在: {}", userDTO.getUsername(), e);
-    throw new BusinessException("USER_EXISTS", "用户已存在");
-} catch (DatabaseException e) {
-    log.error("数据库操作失败: {}", userDTO, e);
-    throw new SystemException("系统异常，请稍后重试", e);
-}
-
-// 不推荐：捕获 Exception
-try {
-    userService.createUser(userDTO);
-} catch (Exception e) {
-    // 不知道具体什么异常
-}
-
-// 不推荐：空 catch 块
-try {
-    userService.createUser(userDTO);
-} catch (Exception e) {
-    // 吞掉异常
-}
-```
-
-### 统一异常处理
-
-```java
-@RestControllerAdvice
-public class GlobalExceptionHandler {
-
-    /**
-     * 业务异常
-     */
-    @ExceptionHandler(BusinessException.class)
-    public Result<Void> handleBusinessException(BusinessException e) {
-        log.warn("业务异常: {}", e.getMessage());
-        return Result.fail(e.getCode(), e.getMessage());
-    }
-
-    /**
-     * 参数校验异常
-     */
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public Result<Void> handleValidException(MethodArgumentNotValidException e) {
-        String message = e.getBindingResult().getFieldError().getDefaultMessage();
-        return Result.fail("INVALID_PARAM", message);
-    }
-
-    /**
-     * 系统异常
-     */
-    @ExceptionHandler(Exception.class)
-    public Result<Void> handleException(Exception e) {
-        log.error("系统异常", e);
-        return Result.fail("SYSTEM_ERROR", "系统异常，请稍后重试");
-    }
-}
-```
-
-### 异常抛出原则
-
-1. 不要捕获后不处理
-2. 不要过度使用异常（正常逻辑不用异常）
-3. 异常信息要清晰
-4. finally 块用于资源释放
-
-```java
-// 不推荐：用异常控制流程
-try {
-    Integer.parseInt(str);
-    return true;
-} catch (NumberFormatException e) {
-    return false;
-}
-
-// 推荐：正常逻辑判断
-return str.matches("\\d+");
 ```
 
 ---
@@ -823,7 +1274,7 @@ public class OrderService {
                     lock.unlock();
                 }
             } else {
-                throw new BusinessException("系统繁忙，请稍后重试");
+                throw new BizException("系统繁忙，请稍后重试");
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -971,6 +1422,32 @@ log.info("用户登录, username: {}, phone: {}",
 log.info("用户登录, password: {}", password);
 ```
 
+### Controller 日志规范
+
+Controller 层需要记录敏感接口的请求参数：
+
+```java
+@Slf4j
+@RestController
+public class UserController {
+
+    @PostMapping("/users/query")
+    public PageResponse<UserVO> queryUser(
+        @RequestBody @Validated UserQueryRO userQueryRO,
+        Pageable pageable) {
+
+        // 记录管理员请求日志
+        if (UserContextSupport.getCurrentUser(true)
+                .getAudienceClaim().equals(JwtAudienceClaim.ADMIN)) {
+            log.info("POST /open/basic/v1/users/query, param={}",
+                     JSONObject.toJSONString(userQueryRO));
+        }
+
+        return PageResponse.getInstance(userService.queryUser(userQueryRO, pageable));
+    }
+}
+```
+
 ---
 
 ## 安全编码
@@ -1039,9 +1516,9 @@ public class UserDTO {
 }
 
 @PostMapping("/users")
-public Result<Void> createUser(@Valid @RequestBody UserDTO userDTO) {
+public JsonResponse<Void> createUser(@Valid @RequestBody UserDTO userDTO) {
     userService.createUser(userDTO);
-    return Result.success();
+    return JsonResponse.success();
 }
 ```
 
